@@ -11,12 +11,13 @@ use string_cache::{Atom, Namespace};
 
 pub trait TNode<'a>: Clone + Copy {
     type Element: TElement<'a>;
+    type Output: TNode<'a> = Self;
 
-    fn parent_node(self) -> Option<Self>;
-    fn first_child(self) -> Option<Self>;
-    fn last_child(self) -> Option<Self>;
-    fn prev_sibling(self) -> Option<Self>;
-    fn next_sibling(self) -> Option<Self>;
+    fn parent_node(self) -> Option<Self::Output>;
+    fn first_child(self) -> Option<Self::Output>;
+    fn last_child(self) -> Option<Self::Output>;
+    fn prev_sibling(self) -> Option<Self::Output>;
+    fn next_sibling(self) -> Option<Self::Output>;
     fn is_document(self) -> bool;
     fn is_element(self) -> bool;
     fn as_element(self) -> Self::Element;
