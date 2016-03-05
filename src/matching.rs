@@ -11,7 +11,7 @@ use quickersort::sort_by;
 use string_cache::Atom;
 
 use parser::{CaseSensitivity, Combinator, ComplexSelector, LocalName};
-use parser::{SimpleSelector, Selector, SelectorImpl};
+use parser::{SimpleSelector, Selector, SelectorImpl, Specificity};
 use tree::Element;
 use hash_map::{self, HashMap};
 
@@ -248,7 +248,7 @@ pub struct Rule<T, Impl: SelectorImpl> {
 pub struct DeclarationBlock<T> {
     pub declarations: Arc<T>,
     pub source_order: usize,
-    pub specificity: u32,
+    pub specificity: Specificity,
 }
 
 // FIXME(https://github.com/rust-lang/rust/issues/7671)
@@ -279,7 +279,7 @@ impl<T> DeclarationBlock<T> {
         DeclarationBlock {
             declarations: declarations,
             source_order: 0,
-            specificity: 0,
+            specificity: Specificity::default(),
         }
     }
 }
