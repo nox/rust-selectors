@@ -72,7 +72,7 @@ pub struct Selector<Impl: SelectorImpl> {
 #[cfg_attr(feature = "heap_size", derive(HeapSizeOf))]
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct ComplexSelector<Impl: SelectorImpl> {
-    pub compound_selector: Vec<SimpleSelector<Impl>>,
+    pub compound_selector: Box<[SimpleSelector<Impl>]>,
     pub next: Option<(Arc<ComplexSelector<Impl>>, Combinator)>,  // c.next is left of c
 }
 
@@ -103,7 +103,7 @@ pub enum SimpleSelector<Impl: SelectorImpl> {
     AttrSuffixMatch(AttrSelector, String),  // [foo$=bar]
 
     // Pseudo-classes
-    Negation(Vec<Arc<ComplexSelector<Impl>>>),
+    Negation(Box<[Arc<ComplexSelector<Impl>>]>),
     FirstChild, LastChild, OnlyChild,
     Root,
     Empty,
@@ -273,7 +273,9 @@ fn complex_selector_specificity<Impl>(mut selector: &ComplexSelector<Impl>)
 
 
 
-pub fn parse_author_origin_selector_list_from_str<Impl: SelectorImpl>(input: &str) -> Result<Vec<Selector<Impl>>, ()> {
+pub fn parse_author_origin_selector_list_from_str<Impl>(input: &str)
+                                                        -> Result<Box<[Selector<Impl>]>, ()>
+                                                        where Impl: SelectorImpl {
     let context = ParserContext::new();
     parse_selector_list(&context, &mut Parser::new(input))
 }
@@ -282,9 +284,9 @@ pub fn parse_author_origin_selector_list_from_str<Impl: SelectorImpl>(input: &st
 ///
 /// * `Err(())` invalid selector list, abort.
 pub fn parse_selector_list<Impl>(context: &ParserContext, input: &mut Parser)
-                                 -> Result<Vec<Selector<Impl>>, ()>
+                                 -> Result<Box<[Selector<Impl>]>, ()>
                                  where Impl: SelectorImpl {
-    input.parse_comma_separated(|input| parse_selector(context, input))
+    input.parse_comma_separated(|input| parse_selector(context, input)).map(Vec::into_boxed_slice)
 }
 
 
@@ -382,7 +384,7 @@ fn parse_complex_selector<Impl>(context: &ParserContext, input: &mut Parser)
 /// * `Err(())`: Invalid sequence, abort.
 fn parse_compound_selector<Impl>(context: &ParserContext,
                                  input: &mut Parser)
-                                 -> Result<Vec<SimpleSelector<Impl>>, ()>
+                                 -> Result<Box<[SimpleSelector<Impl>]>, ()>
                                  where Impl: SelectorImpl {
     let mut compound_selector =
         try!(parse_type_selector::<Impl>(context, input)).unwrap_or(vec![]);
@@ -392,7 +394,7 @@ fn parse_compound_selector<Impl>(context: &ParserContext,
             Some(s) => compound_selector.push(s),
         }
     }
-    Ok(compound_selector)
+    Ok(compound_selector.into_boxed_slice())
 }
 
 /// * `Err(())`: Invalid selector, abort
@@ -559,6 +561,7 @@ fn parse_attribute_flags(input: &mut Parser) -> Result<CaseSensitivity, ()> {
 fn parse_negation<Impl: SelectorImpl>(context: &ParserContext, input: &mut Parser)
                                       -> Result<SimpleSelector<Impl>, ()> {
     input.parse_comma_separated(|input| parse_complex_selector(context, input).map(Arc::new))
+         .map(Vec::into_boxed_slice)
          .map(SimpleSelector::Negation)
 }
 
@@ -760,11 +763,11 @@ pub mod tests {
         }
     }
 
-    fn parse(input: &str) -> Result<Vec<Selector<DummySelectorImpl>>, ()> {
+    fn parse(input: &str) -> Result<Box<[Selector<DummySelectorImpl>]>, ()> {
         parse_ns(input, &ParserContext::new())
     }
 
-    fn parse_ns(input: &str, context: &ParserContext) -> Result<Vec<Selector<DummySelectorImpl>>, ()> {
+    fn parse_ns(input: &str, context: &ParserContext) -> Result<Box<[Selector<DummySelectorImpl>]>, ()> {
         parse_selector_list(context, &mut Parser::new(input))
     }
 
@@ -783,169 +786,180 @@ pub mod tests {
         assert_eq!(parse(""), Err(())) ;
         assert_eq!(parse("EeÉ"), Ok(vec!(Selector {
             complex_selector: Arc::new(ComplexSelector {
-                compound_selector: vec!(SimpleSelector::LocalName(LocalName {
+                compound_selector: Box::new([SimpleSelector::LocalName(LocalName {
                     name: Atom::from("EeÉ"),
-                    lower_name: Atom::from("eeÉ") })),
+                    lower_name: Atom::from("eeÉ"),
+                })]),
                 next: None,
             }),
             pseudo_element: None,
             specificity: specificity(0, 0, 1),
-        })));
+        }).into_boxed_slice()));
         assert_eq!(parse(".foo"), Ok(vec!(Selector {
             complex_selector: Arc::new(ComplexSelector {
-                compound_selector: vec!(SimpleSelector::Class(Atom::from("foo"))),
+                compound_selector: Box::new([SimpleSelector::Class(Atom::from("foo"))]),
                 next: None,
             }),
             pseudo_element: None,
             specificity: specificity(0, 1, 0),
-        })));
+        }).into_boxed_slice()));
         assert_eq!(parse("#bar"), Ok(vec!(Selector {
             complex_selector: Arc::new(ComplexSelector {
-                compound_selector: vec!(SimpleSelector::ID(Atom::from("bar"))),
+                compound_selector: Box::new([SimpleSelector::ID(Atom::from("bar"))]),
                 next: None,
             }),
             pseudo_element: None,
             specificity: specificity(1, 0, 0),
-        })));
+        }).into_boxed_slice()));
         assert_eq!(parse("e.foo#bar"), Ok(vec!(Selector {
             complex_selector: Arc::new(ComplexSelector {
-                compound_selector: vec!(SimpleSelector::LocalName(LocalName {
-                                            name: Atom::from("e"),
-                                            lower_name: Atom::from("e") }),
-                                       SimpleSelector::Class(Atom::from("foo")),
-                                       SimpleSelector::ID(Atom::from("bar"))),
+                compound_selector: Box::new([
+                    SimpleSelector::LocalName(LocalName {
+                        name: Atom::from("e"),
+                        lower_name: Atom::from("e")
+                    }),
+                    SimpleSelector::Class(Atom::from("foo")),
+                    SimpleSelector::ID(Atom::from("bar"))
+                ]),
                 next: None,
             }),
             pseudo_element: None,
             specificity: specificity(1, 1, 1),
-        })));
+        }).into_boxed_slice()));
         assert_eq!(parse("e.foo #bar"), Ok(vec!(Selector {
             complex_selector: Arc::new(ComplexSelector {
-                compound_selector: vec!(SimpleSelector::ID(Atom::from("bar"))),
+                compound_selector:
+                    Box::new([SimpleSelector::ID(Atom::from("bar"))]),
                 next: Some((Arc::new(ComplexSelector {
-                    compound_selector: vec!(SimpleSelector::LocalName(LocalName {
-                                                name: Atom::from("e"),
-                                                lower_name: Atom::from("e") }),
-                                           SimpleSelector::Class(Atom::from("foo"))),
+                    compound_selector: Box::new([
+                        SimpleSelector::LocalName(LocalName {
+                            name: Atom::from("e"),
+                            lower_name: Atom::from("e")
+                        }),
+                        SimpleSelector::Class(Atom::from("foo"))
+                    ]),
                     next: None,
                 }), Combinator::Descendant)),
             }),
             pseudo_element: None,
             specificity: specificity(1, 1, 1),
-        })));
+        }).into_boxed_slice()));
         // Default namespace does not apply to attribute selectors
         // https://github.com/mozilla/servo/pull/1652
         let mut context = ParserContext::new();
         assert_eq!(parse_ns("[Foo]", &context), Ok(vec!(Selector {
             complex_selector: Arc::new(ComplexSelector {
-                compound_selector: vec!(SimpleSelector::AttrExists(AttrSelector {
+                compound_selector: Box::new([SimpleSelector::AttrExists(AttrSelector {
                     name: Atom::from("Foo"),
                     lower_name: Atom::from("foo"),
                     namespace: NamespaceConstraint::Specific(ns!()),
-                })),
+                })]),
                 next: None,
             }),
             pseudo_element: None,
             specificity: specificity(0, 1, 0),
-        })));
+        }).into_boxed_slice()));
         // Default namespace does not apply to attribute selectors
         // https://github.com/mozilla/servo/pull/1652
         context.default_namespace = Some(ns!(mathml));
         assert_eq!(parse_ns("[Foo]", &context), Ok(vec!(Selector {
             complex_selector: Arc::new(ComplexSelector {
-                compound_selector: vec!(SimpleSelector::AttrExists(AttrSelector {
+                compound_selector: Box::new([SimpleSelector::AttrExists(AttrSelector {
                     name: Atom::from("Foo"),
                     lower_name: Atom::from("foo"),
                     namespace: NamespaceConstraint::Specific(ns!()),
-                })),
+                })]),
                 next: None,
             }),
             pseudo_element: None,
             specificity: specificity(0, 1, 0),
-        })));
+        }).into_boxed_slice()));
         // Default namespace does apply to type selectors
         assert_eq!(parse_ns("e", &context), Ok(vec!(Selector {
             complex_selector: Arc::new(ComplexSelector {
-                compound_selector: vec!(
+                compound_selector: Box::new([
                     SimpleSelector::Namespace(ns!(mathml)),
                     SimpleSelector::LocalName(LocalName {
                         name: Atom::from("e"),
                         lower_name: Atom::from("e") }),
-                ),
+                ]),
                 next: None,
             }),
             pseudo_element: None,
             specificity: specificity(0, 0, 1),
-        })));
+        }).into_boxed_slice()));
         assert_eq!(parse("[attr|=\"foo\"]"), Ok(vec![Selector {
             complex_selector: Arc::new(ComplexSelector {
-                compound_selector: vec![
+                compound_selector: Box::new([
                     SimpleSelector::AttrDashMatch(AttrSelector {
                         name: Atom::from("attr"),
                         lower_name: Atom::from("attr"),
                         namespace: NamespaceConstraint::Specific(ns!()),
                     }, "foo".to_owned(), "foo-".to_owned())
-                ],
+                ]),
                 next: None,
             }),
             pseudo_element: None,
             specificity: specificity(0, 1, 0),
-        }]));
+        }].into_boxed_slice()));
         // https://github.com/mozilla/servo/issues/1723
         assert_eq!(parse("::before"), Ok(vec!(Selector {
             complex_selector: Arc::new(ComplexSelector {
-                compound_selector: vec!(),
+                compound_selector: Box::new([]),
                 next: None,
             }),
             pseudo_element: Some(PseudoElement::Before),
             specificity: specificity(0, 0, 1),
-        })));
+        }).into_boxed_slice()));
         assert_eq!(parse("div :after"), Ok(vec!(Selector {
             complex_selector: Arc::new(ComplexSelector {
-                compound_selector: vec!(),
+                compound_selector: Box::new([]),
                 next: Some((Arc::new(ComplexSelector {
-                    compound_selector: vec!(SimpleSelector::LocalName(LocalName {
+                    compound_selector: Box::new([SimpleSelector::LocalName(LocalName {
                         name: atom!("div"),
-                        lower_name: atom!("div") })),
+                        lower_name: atom!("div")
+                    })]),
                     next: None,
                 }), Combinator::Descendant)),
             }),
             pseudo_element: Some(PseudoElement::After),
             specificity: specificity(0, 0, 2),
-        })));
+        }).into_boxed_slice()));
         assert_eq!(parse("#d1 > .ok"), Ok(vec![Selector {
             complex_selector: Arc::new(ComplexSelector {
-                compound_selector: vec![
+                compound_selector: Box::new([
                     SimpleSelector::Class(Atom::from("ok")),
-                ],
+                ]),
                 next: Some((Arc::new(ComplexSelector {
-                    compound_selector: vec![
+                    compound_selector: Box::new([
                         SimpleSelector::ID(Atom::from("d1")),
-                    ],
+                    ]),
                     next: None,
                 }), Combinator::Child)),
             }),
             pseudo_element: None,
             specificity: (1 << 20) + (1 << 10) + (0 << 0),
-        }]));
+        }].into_boxed_slice()));
         assert_eq!(parse(":not(.babybel, .provel)"), Ok(vec!(Selector {
             complex_selector: Arc::new(ComplexSelector {
-                compound_selector: vec!(SimpleSelector::Negation(
-                    vec!(
+                compound_selector: Box::new([SimpleSelector::Negation(
+                    Box::new([
                         Arc::new(ComplexSelector {
-                            compound_selector: vec!(SimpleSelector::Class(Atom::from("babybel"))),
+                            compound_selector:
+                                Box::new([SimpleSelector::Class(Atom::from("babybel"))]),
                             next: None
                         }),
                         Arc::new(ComplexSelector {
-                            compound_selector: vec!(SimpleSelector::Class(Atom::from("provel"))),
+                            compound_selector:
+                                Box::new([SimpleSelector::Class(Atom::from("provel"))]),
                             next: None
                         }),
-                    )
-                )),
+                    ])
+                )]),
                 next: None,
             }),
             pseudo_element: None,
             specificity: specificity(0, 1, 0),
-        })));
+        }).into_boxed_slice()));
     }
 }
