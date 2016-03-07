@@ -4,12 +4,10 @@
 
 use std::ascii::AsciiExt;
 use std::borrow::Cow;
-use std::cmp;
 use std::convert::{From, Into};
 use std::default::Default;
 use std::fmt::Debug;
 use std::hash::Hash;
-use std::ops::Add;
 use std::sync::Arc;
 #[cfg(feature = "heap_size")]
 use heapsize::HeapSizeOf;
@@ -18,6 +16,8 @@ use cssparser::{Token, Parser, parse_nth};
 use string_cache::{Atom, Namespace};
 
 use hash_map;
+use specificity::UnpackedSpecificity;
+pub use specificity::Specificity;
 
 /// This trait allows to define the parser implementation in regards
 /// of pseudo-classes/elements
@@ -147,77 +147,6 @@ pub struct AttrSelector {
 pub enum NamespaceConstraint {
     Any,
     Specific(Namespace),
-}
-
-const MAX_10BIT: u32 = (1u32 << 10) - 1;
-
-/// A selector specificity.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-#[cfg_attr(feature = "heap_size", derive(HeapSizeOf))]
-pub struct Specificity(u32);
-
-impl Add for Specificity {
-    type Output = Specificity;
-
-    fn add(self, rhs: Specificity) -> Specificity {
-        Specificity(
-            cmp::min(self.0 & MAX_10BIT << 20 + rhs.0 & MAX_10BIT << 20, MAX_10BIT << 20)
-            | cmp::min(self.0 & MAX_10BIT << 10 + rhs.0 & MAX_10BIT << 10, MAX_10BIT << 10)
-            | cmp::min(self.0 & MAX_10BIT + rhs.0 & MAX_10BIT, MAX_10BIT))
-    }
-}
-
-impl Default for Specificity {
-    fn default() -> Specificity {
-        Specificity(0)
-    }
-}
-
-impl From<u32> for Specificity {
-    fn from(value: u32) -> Specificity {
-        assert!(value <= MAX_10BIT << 20 | MAX_10BIT << 10 | MAX_10BIT);
-        Specificity(value)
-    }
-}
-
-#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
-struct UnpackedSpecificity {
-    id_selectors: u32,
-    class_like_selectors: u32,
-    element_selectors: u32,
-}
-
-impl Add for UnpackedSpecificity {
-    type Output = UnpackedSpecificity;
-
-    fn add(self, rhs: UnpackedSpecificity) -> UnpackedSpecificity {
-        UnpackedSpecificity {
-            id_selectors: self.id_selectors + rhs.id_selectors,
-            class_like_selectors:
-                self.class_like_selectors + rhs.class_like_selectors,
-            element_selectors:
-                self.element_selectors + rhs.element_selectors,
-        }
-    }
-}
-
-impl Default for UnpackedSpecificity {
-    fn default() -> UnpackedSpecificity {
-        UnpackedSpecificity {
-            id_selectors: 0,
-            class_like_selectors: 0,
-            element_selectors: 0,
-        }
-    }
-}
-
-impl From<UnpackedSpecificity> for Specificity {
-    fn from(specificity: UnpackedSpecificity) -> Specificity {
-        Specificity(
-            cmp::min(specificity.id_selectors, MAX_10BIT) << 20
-            | cmp::min(specificity.class_like_selectors, MAX_10BIT) << 10
-            | cmp::min(specificity.element_selectors, MAX_10BIT))
-    }
 }
 
 fn specificity<Impl>(complex_selector: &ComplexSelector<Impl>,
@@ -739,6 +668,7 @@ fn skip_whitespace(input: &mut Parser) {
 pub mod tests {
     use std::sync::Arc;
     use cssparser::Parser;
+    use specificity::UnpackedSpecificity;
     use string_cache::Atom;
     use super::*;
 
@@ -789,10 +719,6 @@ pub mod tests {
         parse_selector_list(context, &mut Parser::new(input))
     }
 
-    fn specificity(a: u32, b: u32, c: u32) -> Specificity {
-        Specificity::from(a << 20 | b << 10 | c)
-    }
-
     #[test]
     fn test_empty() {
         let list = parse_author_origin_selector_list_from_str::<DummySelectorImpl>(":empty");
@@ -811,7 +737,7 @@ pub mod tests {
                 next: None,
             }),
             pseudo_element: None,
-            specificity: specificity(0, 0, 1),
+            specificity: UnpackedSpecificity::new(0, 0, 1).into(),
         }).into_boxed_slice()));
         assert_eq!(parse(".foo"), Ok(vec!(Selector {
             complex_selector: Arc::new(ComplexSelector {
@@ -819,7 +745,7 @@ pub mod tests {
                 next: None,
             }),
             pseudo_element: None,
-            specificity: specificity(0, 1, 0),
+            specificity: UnpackedSpecificity::new(0, 1, 0).into(),
         }).into_boxed_slice()));
         assert_eq!(parse("#bar"), Ok(vec!(Selector {
             complex_selector: Arc::new(ComplexSelector {
@@ -827,7 +753,7 @@ pub mod tests {
                 next: None,
             }),
             pseudo_element: None,
-            specificity: specificity(1, 0, 0),
+            specificity: UnpackedSpecificity::new(1, 0, 0).into(),
         }).into_boxed_slice()));
         assert_eq!(parse("e.foo#bar"), Ok(vec!(Selector {
             complex_selector: Arc::new(ComplexSelector {
@@ -842,7 +768,7 @@ pub mod tests {
                 next: None,
             }),
             pseudo_element: None,
-            specificity: specificity(1, 1, 1),
+            specificity: UnpackedSpecificity::new(1, 1, 1).into(),
         }).into_boxed_slice()));
         assert_eq!(parse("e.foo #bar"), Ok(vec!(Selector {
             complex_selector: Arc::new(ComplexSelector {
@@ -860,7 +786,7 @@ pub mod tests {
                 }), Combinator::Descendant)),
             }),
             pseudo_element: None,
-            specificity: specificity(1, 1, 1),
+            specificity: UnpackedSpecificity::new(1, 1, 1).into(),
         }).into_boxed_slice()));
         // Default namespace does not apply to attribute selectors
         // https://github.com/mozilla/servo/pull/1652
@@ -875,7 +801,7 @@ pub mod tests {
                 next: None,
             }),
             pseudo_element: None,
-            specificity: specificity(0, 1, 0),
+            specificity: UnpackedSpecificity::new(0, 1, 0).into(),
         }).into_boxed_slice()));
         // Default namespace does not apply to attribute selectors
         // https://github.com/mozilla/servo/pull/1652
@@ -890,7 +816,7 @@ pub mod tests {
                 next: None,
             }),
             pseudo_element: None,
-            specificity: specificity(0, 1, 0),
+            specificity: UnpackedSpecificity::new(0, 1, 0).into(),
         }).into_boxed_slice()));
         // Default namespace does apply to type selectors
         assert_eq!(parse_ns("e", &context), Ok(vec!(Selector {
@@ -904,7 +830,7 @@ pub mod tests {
                 next: None,
             }),
             pseudo_element: None,
-            specificity: specificity(0, 0, 1),
+            specificity: UnpackedSpecificity::new(0, 0, 1).into(),
         }).into_boxed_slice()));
         assert_eq!(parse("[attr|=\"foo\"]"), Ok(vec![Selector {
             complex_selector: Arc::new(ComplexSelector {
@@ -918,7 +844,7 @@ pub mod tests {
                 next: None,
             }),
             pseudo_element: None,
-            specificity: specificity(0, 1, 0),
+            specificity: UnpackedSpecificity::new(0, 1, 0).into(),
         }].into_boxed_slice()));
         // https://github.com/mozilla/servo/issues/1723
         assert_eq!(parse("::before"), Ok(vec!(Selector {
@@ -927,7 +853,7 @@ pub mod tests {
                 next: None,
             }),
             pseudo_element: Some(PseudoElement::Before),
-            specificity: specificity(0, 0, 1),
+            specificity: UnpackedSpecificity::new(0, 0, 1).into(),
         }).into_boxed_slice()));
         assert_eq!(parse("div :after"), Ok(vec!(Selector {
             complex_selector: Arc::new(ComplexSelector {
@@ -941,7 +867,7 @@ pub mod tests {
                 }), Combinator::Descendant)),
             }),
             pseudo_element: Some(PseudoElement::After),
-            specificity: specificity(0, 0, 2),
+            specificity: UnpackedSpecificity::new(0, 0, 2).into(),
         }).into_boxed_slice()));
         assert_eq!(parse("#d1 > .ok"), Ok(vec![Selector {
             complex_selector: Arc::new(ComplexSelector {
@@ -956,7 +882,7 @@ pub mod tests {
                 }), Combinator::Child)),
             }),
             pseudo_element: None,
-            specificity: specificity(1, 1, 0),
+            specificity: UnpackedSpecificity::new(1, 1, 0).into(),
         }].into_boxed_slice()));
         assert_eq!(parse(":not(.babybel, .provel)"), Ok(vec!(Selector {
             complex_selector: Arc::new(ComplexSelector {
@@ -977,7 +903,7 @@ pub mod tests {
                 next: None,
             }),
             pseudo_element: None,
-            specificity: specificity(0, 1, 0),
+            specificity: UnpackedSpecificity::new(0, 1, 0).into(),
         }).into_boxed_slice()));
     }
 }

@@ -20,6 +20,7 @@ extern crate fnv;
 pub mod bloom;
 pub mod matching;
 pub mod parser;
+mod specificity;
 mod tree;
 
 pub use tree::Element;
