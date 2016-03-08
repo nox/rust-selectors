@@ -4,7 +4,6 @@
 
 use std::ascii::AsciiExt;
 use std::borrow::Cow;
-use std::convert::{From, Into};
 use std::default::Default;
 use std::fmt::Debug;
 use std::hash::Hash;
@@ -16,7 +15,7 @@ use cssparser::{Token, Parser, parse_nth};
 use string_cache::{Atom, Namespace};
 
 use hash_map;
-use specificity::UnpackedSpecificity;
+use specificity::{Bounds, UnpackedSpecificity};
 pub use specificity::Specificity;
 
 /// This trait allows to define the parser implementation in regards
@@ -66,7 +65,7 @@ impl ParserContext {
 pub struct Selector<Impl: SelectorImpl> {
     pub complex_selector: Arc<ComplexSelector<Impl>>,
     pub pseudo_element: Option<Impl::PseudoElement>,
-    pub specificity: Specificity,
+    pub specificity_bounds: Bounds<Specificity>,
 }
 
 #[cfg_attr(feature = "heap_size", derive(HeapSizeOf))]
@@ -104,6 +103,7 @@ pub enum SimpleSelector<Impl: SelectorImpl> {
 
     // Pseudo-classes
     Negation(Box<[Arc<ComplexSelector<Impl>>]>),
+    Matches(Box<[(Arc<ComplexSelector<Impl>>, Bounds<Specificity>)]>, Bounds<Specificity>),
     FirstChild, LastChild, OnlyChild,
     Root,
     Empty,
@@ -149,29 +149,29 @@ pub enum NamespaceConstraint {
     Specific(Namespace),
 }
 
-fn specificity<Impl>(complex_selector: &ComplexSelector<Impl>,
-                     pseudo_element: Option<&Impl::PseudoElement>)
-                     -> Specificity
-				     where Impl: SelectorImpl {
-    let mut specificity = complex_selector_specificity(complex_selector);
+fn specificity_bounds<Impl>(complex_selector: &ComplexSelector<Impl>,
+                            pseudo_element: Option<&Impl::PseudoElement>)
+                            -> Bounds<Specificity>
+				            where Impl: SelectorImpl {
+    let mut bounds = complex_selector_specificity_bounds(complex_selector);
     if pseudo_element.is_some() {
-        specificity.element_selectors += 1;
+        bounds.incr_element_selectors();
     }
-    specificity.into()
+    bounds.pack()
 }
 
-fn complex_selector_specificity<Impl>(mut selector: &ComplexSelector<Impl>)
-                                      -> UnpackedSpecificity
-                                      where Impl: SelectorImpl {
-    fn compound_selector_specificity<Impl>(compound_selector: &[SimpleSelector<Impl>],
-                                           specificity: &mut UnpackedSpecificity)
-                                           where Impl: SelectorImpl {
+fn complex_selector_specificity_bounds<Impl>(mut selector: &ComplexSelector<Impl>)
+                                             -> Bounds<UnpackedSpecificity>
+                                             where Impl: SelectorImpl {
+    fn incr_bounds_with_compound<Impl>(compound_selector: &[SimpleSelector<Impl>],
+                                       bounds: &mut Bounds<UnpackedSpecificity>)
+                                       where Impl: SelectorImpl {
         for simple_selector in compound_selector.iter() {
             match *simple_selector {
                 SimpleSelector::LocalName(..) =>
-                    specificity.element_selectors += 1,
+                    bounds.incr_element_selectors(),
                 SimpleSelector::ID(..) =>
-                    specificity.id_selectors += 1,
+                    bounds.incr_id_selectors(),
                 SimpleSelector::Class(..) |
                 SimpleSelector::AttrExists(..) |
                 SimpleSelector::AttrEqual(..) |
@@ -191,26 +191,30 @@ fn complex_selector_specificity<Impl>(mut selector: &ComplexSelector<Impl>)
                 SimpleSelector::FirstOfType | SimpleSelector::LastOfType |
                 SimpleSelector::OnlyOfType |
                 SimpleSelector::NonTSPseudoClass(..) =>
-                    specificity.class_like_selectors += 1,
+                    bounds.incr_class_like_selectors(),
                 SimpleSelector::Namespace(..) => (),
                 SimpleSelector::Negation(ref negated) => {
-                    let negated_specificities =
-                        negated.iter().map(|sel| complex_selector_specificity(sel));
-                    *specificity = *specificity + negated_specificities.max().unwrap();
+                    let max_specificity =
+                        negated.iter()
+                               .map(|sel| complex_selector_specificity_bounds(sel).max)
+                               .max().unwrap();
+                    *bounds = *bounds + max_specificity;
+                }
+                SimpleSelector::Matches(_, matches_bounds) => {
+                    *bounds = *bounds + matches_bounds.unpack()
                 }
             }
         }
     }
 
     let mut specificity = Default::default();
-    compound_selector_specificity(&selector.compound_selector,
-                              &mut specificity);
+    incr_bounds_with_compound(&selector.compound_selector, &mut specificity);
     loop {
         match selector.next {
             None => break,
             Some((ref next_selector, _)) => {
                 selector = &**next_selector;
-                compound_selector_specificity(&selector.compound_selector,
+                incr_bounds_with_compound(&selector.compound_selector,
                                           &mut specificity)
             }
         }
@@ -244,14 +248,14 @@ fn parse_selector<Impl>(context: &ParserContext, input: &mut Parser)
                         -> Result<Selector<Impl>, ()>
                         where Impl: SelectorImpl {
     let complex =
-        try!(parse_complex_selector::<Impl>(context, input));
+        try!(parse_complex_selector::<Impl>(context, input).map(Arc::new));
     let pseudo_element = try!(parse_pseudo_element::<Impl>(context, input));
     if !complex.compound_selector.is_empty() || pseudo_element.is_some() {
-        let specificity = specificity(&complex, pseudo_element.as_ref());
+        let bounds = specificity_bounds(&complex, pseudo_element.as_ref());
         Ok(Selector {
-            complex_selector: Arc::new(complex),
+            complex_selector: complex,
             pseudo_element: pseudo_element,
-            specificity: specificity,
+            specificity_bounds: bounds,
         })
     } else {
         Err(())
@@ -512,6 +516,20 @@ fn parse_negation<Impl: SelectorImpl>(context: &ParserContext, input: &mut Parse
          .map(SimpleSelector::Negation)
 }
 
+fn parse_matches<Impl>(context: &ParserContext, input: &mut Parser)
+                       -> Result<SimpleSelector<Impl>, ()>
+                       where Impl: SelectorImpl {
+    let mut bounds = Bounds::default();
+    let sels = try!(input.parse_comma_separated(|input| {
+        parse_complex_selector(context, input).map(|sel| {
+            let specificity = complex_selector_specificity_bounds(&sel).pack();
+            bounds = bounds.widen(specificity);
+            (Arc::new(sel), specificity)
+        })
+    }));
+    Ok(SimpleSelector::Matches(sels.into_boxed_slice(), bounds))
+}
+
 fn parse_functional_pseudo_class<Impl>(context: &ParserContext,
                                        input: &mut Parser,
                                        name: &str)
@@ -523,6 +541,7 @@ fn parse_functional_pseudo_class<Impl>(context: &ParserContext,
         "nth-last-child" => parse_nth_pseudo_class(input, SimpleSelector::NthLastChild),
         "nth-last-of-type" => parse_nth_pseudo_class(input, SimpleSelector::NthLastOfType),
         "not" => parse_negation(context, input),
+        "matches" => parse_matches(context, input),
         _ => Err(())
     }
 }

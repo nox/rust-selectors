@@ -719,6 +719,10 @@ fn matches_simple_selector<E>(selector: &SimpleSelector<E::Impl>,
             *shareable = false;
             !negated.iter().all(|s| matches_complex_selector(s, element, parent_bf, shareable))
         }
+        SimpleSelector::Matches(_, _) => {
+            *shareable = false;
+            unimplemented!();
+        }
     }
 }
 
